@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go/build"
 	"io/ioutil"
 	"os"
 	"os/exec"
@@ -13,9 +14,9 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"text/tabwriter"
+	//"text/tabwriter"
 
-	"github.com/pmezard/licenses/assets"
+	"github.com/digitallumens/licenses/assets"
 )
 
 type Template struct {
@@ -533,6 +534,24 @@ func groupLicenses(licenses []License) ([]License, error) {
 	return kept, nil
 }
 
+func repoName(pkg string) string {
+	s := strings.Split(pkg, "/vendor/")
+	r := s[len(s)-1]
+	c := strings.Split(r, "/")
+	if len(c) <= 3 {
+		return r
+	}
+	return c[0] + "/" + c[1] + "/" + c[2]
+}
+
+type LicenseOutput struct {
+	Package         string
+	Path            string
+	LicenseType     string
+	LicenseNickname string
+	Score           float64
+}
+
 func printLicenses() error {
 	flag.Usage = func() {
 		fmt.Println(`Usage: licenses IMPORTPATH...
@@ -552,14 +571,13 @@ displayed. It helps assessing the changes importance.
 		os.Exit(1)
 	}
 	all := flag.Bool("a", false, "display all individual packages")
-	words := flag.Bool("w", false, "display words not matching license template")
+	// words := flag.Bool("w", false, "display words not matching license template")
 	flag.Parse()
 	if flag.NArg() < 1 {
 		return fmt.Errorf("expect at least one package argument")
 	}
 	pkgs := flag.Args()
 
-	confidence := 0.9
 	licenses, err := listLicenses("", pkgs)
 	if err != nil {
 		return err
@@ -570,32 +588,64 @@ displayed. It helps assessing the changes importance.
 			return err
 		}
 	}
-	w := tabwriter.NewWriter(os.Stdout, 1, 4, 2, ' ', 0)
-	for _, l := range licenses {
-		license := "?"
-		if l.Template != nil {
-			if l.Score > .99 {
-				license = fmt.Sprintf("%s", l.Template.Title)
-			} else if l.Score >= confidence {
-				license = fmt.Sprintf("%s (%2d%%)", l.Template.Title, int(100*l.Score))
-				if *words && len(l.ExtraWords) > 0 {
-					license += "\n\t+words: " + strings.Join(l.ExtraWords, ", ")
-				}
-				if *words && len(l.MissingWords) > 0 {
-					license += "\n\t-words: " + strings.Join(l.MissingWords, ", ")
-				}
-			} else {
-				license = fmt.Sprintf("? (%s, %2d%%)", l.Template.Title, int(100*l.Score))
-			}
-		} else if l.Err != "" {
-			license = strings.Replace(l.Err, "\n", " ", -1)
-		}
-		_, err = w.Write([]byte(l.Package + "\t" + license + "\n"))
-		if err != nil {
-			return err
-		}
+
+	goPath := os.Getenv("GOPATH")
+	if goPath == "" {
+		goPath = build.Default.GOPATH
 	}
-	return w.Flush()
+
+	licenseOut := []LicenseOutput{}
+	for _, l := range licenses {
+		lo := LicenseOutput{
+			Package: repoName(l.Package),
+			Path:    l.Path,
+		}
+		if lo.Path != "" {
+			lo.Path = goPath + "/src/" + lo.Path
+		}
+		if l.Template != nil {
+			lo.LicenseType = l.Template.Title
+			lo.LicenseNickname = l.Template.Nickname
+			lo.Score = l.Score
+		}
+		licenseOut = append(licenseOut, lo)
+	}
+	jsonData, err := json.MarshalIndent(licenseOut, "", "    ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(jsonData))
+	return nil
+
+	/*
+		  confidence := 0.9
+			w := tabwriter.NewWriter(os.Stdout, 1, 4, 2, ' ', 0)
+			for _, l := range licenses {
+				license := "?"
+				if l.Template != nil {
+					if l.Score > .99 {
+						license = fmt.Sprintf("%s", l.Template.Title)
+					} else if l.Score >= confidence {
+						license = fmt.Sprintf("%s (%2d%%)", l.Template.Title, int(100*l.Score))
+						if *words && len(l.ExtraWords) > 0 {
+							license += "\n\t+words: " + strings.Join(l.ExtraWords, ", ")
+						}
+						if *words && len(l.MissingWords) > 0 {
+							license += "\n\t-words: " + strings.Join(l.MissingWords, ", ")
+						}
+					} else {
+						license = fmt.Sprintf("? (%s, %2d%%)", l.Template.Title, int(100*l.Score))
+					}
+				} else if l.Err != "" {
+					license = strings.Replace(l.Err, "\n", " ", -1)
+				}
+				_, err = w.Write([]byte(l.Package + "\t" + license + "\t" + l.Path + "\n"))
+				if err != nil {
+					return err
+				}
+			}
+			return w.Flush()
+	*/
 }
 
 func main() {
